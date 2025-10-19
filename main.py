@@ -18,7 +18,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://quick-dub-ai.lovable.app/",  # ⬅️ Replace with your actual Lovable app URL
+        "https://quick-dub-ai.lovable.app",  # ⬅️ Replace with your actual Lovable app URL
         "http://localhost:3000",  # Optional: useful for local testing
     ],
     allow_credentials=True,
