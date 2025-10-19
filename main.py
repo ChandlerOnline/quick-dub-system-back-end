@@ -4,6 +4,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from elevenlabs.client import ElevenLabs
 
@@ -11,7 +12,19 @@ load_dotenv()
 
 app = FastAPI()
 
-# Initialize ElevenLabs + Supabase
+# ✅ Enable CORS for Lovable Frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://your-lovable-app-domain.com",  # ⬅️ Replace with your actual Lovable app URL
+        "http://localhost:3000",  # Optional: useful for local testing
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ✅ Initialize ElevenLabs + Supabase
 client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY")
