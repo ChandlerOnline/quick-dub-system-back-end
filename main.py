@@ -4,13 +4,25 @@ import requests
 import subprocess
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
 
+# Load environment variables
 load_dotenv()
 client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
+# Initialize FastAPI
 app = FastAPI()
+
+# --- CORS middleware ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Change to your frontend URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def root():
@@ -24,7 +36,7 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # ✅ Start dubbing job using ElevenLabs (new parameter format)
+        # Start dubbing job using ElevenLabs
         with open(input_path, "rb") as f:
             dubbing_job = client.dubbing.create(
                 csv_file=None,
@@ -37,7 +49,7 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
 
         dubbing_id = dubbing_job.dubbing_id
 
-       # ⏳ Poll job until done
+        # Poll job until done
         while True:
             meta = client.dubbing.get(dubbing_id)
             if meta.status in ("dubbed", "complete"):
@@ -46,12 +58,11 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
                 return JSONResponse({"error": "Dubbing failed"}, status_code=500)
             time.sleep(5)
 
-        # 🎧 Fetch dubbed audio
+        # Fetch dubbed audio
         base = "https://api.elevenlabs.io/v1/dubbing"
         audio_url = f"{base}/{dubbing_id}/audio/{language}"
         headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
 
-        # Retry fetching up to 5 times (sometimes audio isn’t ready right away)
         for attempt in range(5):
             resp = requests.get(audio_url, headers=headers, stream=True)
             if resp.status_code == 200:
@@ -59,27 +70,17 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
             time.sleep(3)
 
         if resp.status_code != 200:
-            # Try alternative output URL if audio endpoint not ready
             output_url = f"{base}/{dubbing_id}/output"
             resp = requests.get(output_url, headers=headers, stream=True)
             if resp.status_code != 200:
                 return JSONResponse({"error": f"Failed to fetch dubbed audio ({resp.status_code})"}, status_code=500)
-
-        # 🎧 Fetch dubbed audio
-        base = "https://api.elevenlabs.io/v1/dubbing"
-        audio_url = f"{base}/{dubbing_id}/audio/{language}"
-        headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
-        resp = requests.get(audio_url, headers=headers, stream=True)
-
-        if resp.status_code != 200:
-            return JSONResponse({"error": "Failed to fetch dubbed audio"}, status_code=500)
 
         dubbed_audio_path = "dubbed_audio.mp3"
         with open(dubbed_audio_path, "wb") as outf:
             for chunk in resp.iter_content(chunk_size=8192):
                 outf.write(chunk)
 
-        # 🎬 Combine dubbed audio + original video
+        # Combine dubbed audio + original video
         output_path = f"dubbed_{file.filename}"
         subprocess.run([
             "ffmpeg",
@@ -97,3 +98,4 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
