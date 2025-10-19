@@ -7,6 +7,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from elevenlabs.client import ElevenLabs
+from supabase import create_client, Client
+
 
 load_dotenv()
 
