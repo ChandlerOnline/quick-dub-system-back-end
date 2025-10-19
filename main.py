@@ -67,7 +67,7 @@ async def create_dub(
             dub_kwargs["disable_voice_cloning"] = True
 
         # Create dubbing job
-        dub = client.dubbing.dub_a_video(**dub_kwargs)
+        dub = client.dubbing.dub_video(**dub_kwargs)
         dubbing_id = dub.id
 
         # Store in Lovable Cloud videos table (not projects)
