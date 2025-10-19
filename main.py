@@ -22,30 +22,52 @@ async def create_dub(
     file: UploadFile,
     language: str = Form(...),
     project_name: str = Form("Untitled"),
-    user_id: str = Form(...)
+    user_id: str = Form(...),
+    source_lang: str = Form("auto"),
+    target_lang: str = Form(...),
+    num_speakers: str = Form("Detect"),
+    start_time: str = Form(None),
+    end_time: str = Form(None),
+    disable_voice_cloning: bool = Form(False),
+    dubbing_studio: str = Form("default")
 ):
     try:
-        # Save the uploaded file temporarily
+        # Save uploaded file temporarily
         temp_path = f"temp_{uuid.uuid4()}.mp4"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
 
-        # Create the dubbing job in ElevenLabs
-        with open(temp_path, "rb") as f:
-            dub = client.dubbing.dub_a_video(
-                file=(file.filename, f, file.content_type),
-                target_lang=language,
-                watermark=False,
-            )
+        # Prepare kwargs for optional parameters
+        dub_kwargs = {
+            "file": (file.filename, open(temp_path, "rb"), file.content_type),
+            "target_lang": target_lang,
+            "watermark": False,
+        }
 
+        # Only include optional params if the user provided them
+        if start_time and end_time:
+            dub_kwargs["start_time"] = start_time
+            dub_kwargs["end_time"] = end_time
+        if num_speakers.lower() != "detect":
+            dub_kwargs["num_speakers"] = int(num_speakers)
+        if disable_voice_cloning:
+            dub_kwargs["disable_voice_cloning"] = True
+
+        # Create the dubbing job in ElevenLabs
+        dub = client.dubbing.dub_a_video(**dub_kwargs)
         dubbing_id = dub.id
 
-        # Store project metadata in Supabase
+        # Store metadata in Supabase
         supabase.table("projects").insert({
             "user_id": user_id,
             "project_name": project_name,
             "dubbing_id": dubbing_id,
-            "language": language,
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "num_speakers": num_speakers,
+            "start_time": start_time,
+            "end_time": end_time,
+            "disable_voice_cloning": disable_voice_cloning,
             "status": "processing"
         }).execute()
 
@@ -54,6 +76,7 @@ async def create_dub(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/status/{dubbing_id}")
