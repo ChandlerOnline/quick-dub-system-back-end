@@ -1,101 +1,118 @@
 import os
-import time
+import uuid
 import requests
-import subprocess
-from fastapi import FastAPI, UploadFile, Form
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, Form, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from supabase import create_client, Client
 from elevenlabs.client import ElevenLabs
 
-# Load environment variables
 load_dotenv()
-client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
-# Initialize FastAPI
 app = FastAPI()
 
-# --- CORS middleware ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Change to your frontend URL in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Initialize ElevenLabs + Supabase
+client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY")
 )
 
-@app.get("/")
-def root():
-    return {"message": "QuickDub backend is live 🚀"}
-
 @app.post("/dub")
-async def dub_video(file: UploadFile, language: str = Form(...)):
+async def create_dub(
+    file: UploadFile,
+    language: str = Form(...),
+    project_name: str = Form("Untitled"),
+    user_id: str = Form(...)
+):
     try:
-        # Save uploaded file
-        input_path = f"temp_{file.filename}"
-        with open(input_path, "wb") as f:
+        # Save the uploaded file temporarily
+        temp_path = f"temp_{uuid.uuid4()}.mp4"
+        with open(temp_path, "wb") as f:
             f.write(await file.read())
 
-        # Start dubbing job using ElevenLabs
-        with open(input_path, "rb") as f:
-            dubbing_job = client.dubbing.create(
-                csv_file=None,
-                foreground_audio_file=None,
-                background_audio_file=None,
-                file=f,
+        # Create the dubbing job in ElevenLabs
+        with open(temp_path, "rb") as f:
+            dub = client.dubbing.dub_a_video(
+                file=(file.filename, f, file.content_type),
                 target_lang=language,
-                mode="automatic"
+                watermark=False,
             )
 
-        dubbing_id = dubbing_job.dubbing_id
+        dubbing_id = dub.id
 
-        # Poll job until done
-        while True:
-            meta = client.dubbing.get(dubbing_id)
-            if meta.status in ("dubbed", "complete"):
-                break
-            elif meta.status in ("failed", "error"):
-                return JSONResponse({"error": "Dubbing failed"}, status_code=500)
-            time.sleep(5)
+        # Store project metadata in Supabase
+        supabase.table("projects").insert({
+            "user_id": user_id,
+            "project_name": project_name,
+            "dubbing_id": dubbing_id,
+            "language": language,
+            "status": "processing"
+        }).execute()
 
-        # Fetch dubbed audio
-        base = "https://api.elevenlabs.io/v1/dubbing"
-        audio_url = f"{base}/{dubbing_id}/audio/{language}"
-        headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
-
-        for attempt in range(5):
-            resp = requests.get(audio_url, headers=headers, stream=True)
-            if resp.status_code == 200:
-                break
-            time.sleep(3)
-
-        if resp.status_code != 200:
-            output_url = f"{base}/{dubbing_id}/output"
-            resp = requests.get(output_url, headers=headers, stream=True)
-            if resp.status_code != 200:
-                return JSONResponse({"error": f"Failed to fetch dubbed audio ({resp.status_code})"}, status_code=500)
-
-        dubbed_audio_path = "dubbed_audio.mp3"
-        with open(dubbed_audio_path, "wb") as outf:
-            for chunk in resp.iter_content(chunk_size=8192):
-                outf.write(chunk)
-
-        # Combine dubbed audio + original video
-        output_path = f"dubbed_{file.filename}"
-        subprocess.run([
-            "ffmpeg",
-            "-i", input_path,
-            "-i", dubbed_audio_path,
-            "-c:v", "copy",
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-shortest",
-            output_path,
-            "-y"
-        ], check=True)
-
-        return FileResponse(output_path, media_type="video/mp4", filename=output_path)
+        os.remove(temp_path)
+        return {"dubbing_id": dubbing_id, "status": "processing"}
 
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/status/{dubbing_id}")
+def get_dub_status(dubbing_id: str):
+    try:
+        meta = client.dubbing.get(dubbing_id)
+        return {
+            "status": meta.status,
+            "progress": getattr(meta, "progress", None),
+            "target_lang": getattr(meta, "target_lang", None)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/output/{dubbing_id}")
+def get_dub_output(dubbing_id: str, user_id: str):
+    try:
+        base = "https://api.elevenlabs.io/v1/dubbing"
+        url = f"{base}/{dubbing_id}/output"
+        headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
+        resp = requests.get(url, headers=headers, stream=True)
+
+        if resp.status_code != 200:
+            return JSONResponse({"error": "Dub not ready"}, status_code=404)
+
+        output_filename = f"dubbed_{dubbing_id}.mp4"
+        with open(output_filename, "wb") as f:
+            for chunk in resp.iter_content(8192):
+                f.write(chunk)
+
+        # Upload to Supabase Storage
+        supabase.storage.from_("dubbed_videos").upload(
+            output_filename, output_filename, {"content-type": "video/mp4"}
+        )
+
+        video_url = (
+            f"{os.getenv('SUPABASE_URL')}/storage/v1/object/public/dubbed_videos/{output_filename}"
+        )
+
+        # Update project record
+        supabase.table("projects").update({
+            "status": "complete",
+            "video_url": video_url
+        }).eq("dubbing_id", dubbing_id).execute()
+
+        os.remove(output_filename)
+
+        return {"video_url": video_url}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/projects/{user_id}")
+def get_user_projects(user_id: str):
+    try:
+        response = supabase.table("projects").select("*").eq("user_id", user_id).execute()
+        return response.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
