@@ -37,14 +37,33 @@ async def dub_video(file: UploadFile, language: str = Form(...)):
 
         dubbing_id = dubbing_job.dubbing_id
 
-        # ⏳ Poll job until done
+       # ⏳ Poll job until done
         while True:
             meta = client.dubbing.get(dubbing_id)
-            if meta.status == "dubbed":
+            if meta.status in ("dubbed", "complete"):
                 break
             elif meta.status in ("failed", "error"):
                 return JSONResponse({"error": "Dubbing failed"}, status_code=500)
             time.sleep(5)
+
+        # 🎧 Fetch dubbed audio
+        base = "https://api.elevenlabs.io/v1/dubbing"
+        audio_url = f"{base}/{dubbing_id}/audio/{language}"
+        headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
+
+        # Retry fetching up to 5 times (sometimes audio isn’t ready right away)
+        for attempt in range(5):
+            resp = requests.get(audio_url, headers=headers, stream=True)
+            if resp.status_code == 200:
+                break
+            time.sleep(3)
+
+        if resp.status_code != 200:
+            # Try alternative output URL if audio endpoint not ready
+            output_url = f"{base}/{dubbing_id}/output"
+            resp = requests.get(output_url, headers=headers, stream=True)
+            if resp.status_code != 200:
+                return JSONResponse({"error": f"Failed to fetch dubbed audio ({resp.status_code})"}, status_code=500)
 
         # 🎧 Fetch dubbed audio
         base = "https://api.elevenlabs.io/v1/dubbing"
