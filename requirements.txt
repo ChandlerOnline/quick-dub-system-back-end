@@ -5,3 +5,4 @@ python-dotenv
 elevenlabs
 ffmpeg-python
 python-multipart
+supabase-py
