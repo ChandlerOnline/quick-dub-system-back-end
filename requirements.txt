@@ -6,3 +6,4 @@ elevenlabs
 ffmpeg-python
 python-multipart
 supabase
+pydantic
