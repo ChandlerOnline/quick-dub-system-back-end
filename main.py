@@ -127,7 +127,7 @@ def get_dub_status(dubbing_id: str):
                 raise HTTPException(status_code=500, detail="Target language not found in video record")
 
             # ✅ Use correct ElevenLabs endpoint with language code
-            download_url = f"{ELEVEN_BASE_URL}/{dubbing_id}/{target_lang}"
+            download_url = f"{ELEVEN_BASE_URL}/{dubbing_id}/audio/{target_lang}"
             
             max_retries = 10
             retry_delay = 5  # seconds
