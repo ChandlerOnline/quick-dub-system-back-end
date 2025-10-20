@@ -52,7 +52,8 @@ async def create_dub(
             f.write(await file.read())
 
         # ✅ Prepare form data for REST API
-        files = {"video": (file.filename, open(temp_path, "rb"), file.content_type)}
+        files = {"file": (file.filename, open(temp_path, "rb"), file.content_type)}
+
         data = {
             "target_lang": target_lang,
             "watermark": "false",
