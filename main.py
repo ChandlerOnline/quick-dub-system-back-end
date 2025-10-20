@@ -6,9 +6,6 @@ from fastapi import FastAPI, UploadFile, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
-from elevenlabs.client import ElevenLabs
-from supabase import create_client, Client
-
 
 load_dotenv()
 
@@ -19,18 +16,21 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://quick-dub-ai.lovable.app",  # ⬅️ Replace with your actual Lovable app URL
-        "http://localhost:3000",  # Optional: useful for local testing
+        "http://localhost:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Initialize ElevenLabs + Supabase
-client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
+# ✅ Initialize Supabase
 supabase: Client = create_client(
     os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_KEY")
 )
+
+ELEVEN_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVEN_BASE_URL = "https://api.elevenlabs.io/v1/dubbing"
+
 
 @app.post("/dub")
 async def create_dub(
@@ -46,56 +46,67 @@ async def create_dub(
     disable_voice_cloning: bool = Form(False),
 ):
     try:
-        # Save uploaded file temporarily
+        # ✅ Save uploaded file temporarily
         temp_path = f"temp_{uuid.uuid4()}.mp4"
         with open(temp_path, "wb") as f:
             f.write(await file.read())
 
-        # Prepare kwargs for ElevenLabs API
-        dub_kwargs = {
-            "file": (file.filename, open(temp_path, "rb"), file.content_type),
+        # ✅ Prepare form data for REST API
+        files = {"video": (file.filename, open(temp_path, "rb"), file.content_type)}
+        data = {
             "target_lang": target_lang,
-            "watermark": False,
+            "watermark": "false",
         }
 
+        # Optional parameters
         if start_time and end_time:
-            dub_kwargs["start_time"] = start_time
-            dub_kwargs["end_time"] = end_time
+            data["start_time"] = start_time
+            data["end_time"] = end_time
         if num_speakers.lower() != "detect":
-            dub_kwargs["num_speakers"] = int(num_speakers)
+            data["num_speakers"] = num_speakers
         if disable_voice_cloning:
-            dub_kwargs["disable_voice_cloning"] = True
+            data["disable_voice_cloning"] = "true"
 
-        # Create dubbing job
-        dub = client.dubbing.dub_video(**dub_kwargs)
-        dubbing_id = dub.id
+        # ✅ Make REST API request to ElevenLabs
+        headers = {"xi-api-key": ELEVEN_API_KEY}
+        response = requests.post(ELEVEN_BASE_URL, headers=headers, files=files, data=data)
 
-        # Store in Lovable Cloud videos table (not projects)
+        os.remove(temp_path)
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+
+        dubbing_data = response.json()
+        dubbing_id = dubbing_data.get("dubbing_id")
+
+        # ✅ Store in Supabase videos table
         supabase.table("videos").insert({
             "user_id": user_id,
             "title": project_name,
             "target_language": target_lang,
             "source_language": source_lang,
-            "status": "processing"
+            "status": "processing",
+            "dubbing_id": dubbing_id
         }).execute()
 
-        os.remove(temp_path)
         return {"dubbing_id": dubbing_id, "status": "processing"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
     try:
-        meta = client.dubbing.get(dubbing_id)
-        return {
-            "status": meta.status,
-            "progress": getattr(meta, "progress", None),
-            "target_lang": getattr(meta, "target_lang", None)
-        }
+        headers = {"xi-api-key": ELEVEN_API_KEY}
+        url = f"{ELEVEN_BASE_URL}/{dubbing_id}"
+        response = requests.get(url, headers=headers)
+
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+
+        return response.json()
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -103,42 +114,38 @@ def get_dub_status(dubbing_id: str):
 @app.get("/output/{dubbing_id}")
 def get_dub_output(dubbing_id: str, user_id: str):
     try:
-        # Get dubbed video from ElevenLabs
-        base = "https://api.elevenlabs.io/v1/dubbing"
-        url = f"{base}/{dubbing_id}/output"
-        headers = {"xi-api-key": os.getenv("ELEVENLABS_API_KEY")}
+        # ✅ Get dubbed video
+        headers = {"xi-api-key": ELEVEN_API_KEY}
+        url = f"{ELEVEN_BASE_URL}/{dubbing_id}/output"
         resp = requests.get(url, headers=headers, stream=True)
 
         if resp.status_code != 200:
-            return JSONResponse({"error": "Dub not ready"}, status_code=404)
+            raise HTTPException(status_code=404, detail="Dub not ready")
 
         output_filename = f"dubbed_{dubbing_id}.mp4"
         with open(output_filename, "wb") as f:
             for chunk in resp.iter_content(8192):
                 f.write(chunk)
 
-        # Upload to Lovable Cloud Storage
+        # ✅ Upload to Supabase Storage
         with open(output_filename, "rb") as f:
             supabase.storage.from_("dubbed_videos").upload(
-                output_filename, 
-                f,
-                {"content-type": "video/mp4"}
+                output_filename, f, {"content-type": "video/mp4"}
             )
 
-        video_url = f"https://rhkooynsxrrwjtnokeld.supabase.co/storage/v1/object/public/dubbed_videos/{output_filename}"
+        video_url = f"{os.getenv('SUPABASE_URL')}/storage/v1/object/public/dubbed_videos/{output_filename}"
 
-        # Update videos table
+        # ✅ Update videos table
         supabase.table("videos").update({
             "status": "complete",
             "dubbed_url": video_url
-        }).eq("user_id", user_id).eq("status", "processing").execute()
+        }).eq("user_id", user_id).eq("dubbing_id", dubbing_id).execute()
 
         os.remove(output_filename)
         return {"video_url": video_url}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/projects/{user_id}")
@@ -148,4 +155,5 @@ def get_user_projects(user_id: str):
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
