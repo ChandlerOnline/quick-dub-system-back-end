@@ -13,10 +13,7 @@ app = FastAPI()
 # ✅ Enable CORS for Lovable Frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://quick-dub-ai.lovable.app",
-        "http://localhost:3000",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
