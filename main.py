@@ -121,7 +121,7 @@ def get_dub_status(dubbing_id: str):
         elevenlabs_status = response.json().get("status")
 
         # If ElevenLabs says complete, download the dubbed file
-        if elevenlabs_status in ["complete", "dubbed", "ready", "finished"]:
+        if elevenlabs_status == "dubbed":
             target_lang = video.get("target_language")
             if not target_lang:
                 raise HTTPException(status_code=500, detail="Target language not found in video record")
