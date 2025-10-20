@@ -95,7 +95,7 @@ async def create_dub(
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
     try:
-        # ✅ Ensure API key is defined
+        # ✅ Ensure environment variables
         ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
         SUPABASE_URL = os.getenv("SUPABASE_URL")
         if not ELEVENLABS_API_KEY:
@@ -115,21 +115,34 @@ def get_dub_status(dubbing_id: str):
 
         # Check ElevenLabs status
         response = requests.get(
-            f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}",
+            f"{ELEVEN_BASE_URL}/{dubbing_id}",
             headers={"xi-api-key": ELEVENLABS_API_KEY}
         )
         response.raise_for_status()
         elevenlabs_status = response.json().get("status")
 
-        # If ElevenLabs says complete, download and upload the video NOW
+        # If ElevenLabs says complete, try downloading with retries
         if elevenlabs_status in ["complete", "dubbed", "ready", "finished"]:
-            video_response = requests.get(
-                f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}/output",
-                headers={"xi-api-key": ELEVENLABS_API_KEY},
-                stream=True
-            )
-            video_response.raise_for_status()
+            max_retries = 5
+            for attempt in range(max_retries):
+                video_response = requests.get(
+                    f"{ELEVEN_BASE_URL}/{dubbing_id}/output",
+                    headers={"xi-api-key": ELEVENLABS_API_KEY},
+                    stream=True
+                )
+                if video_response.status_code == 200:
+                    break  # success
+                elif video_response.status_code == 404:
+                    # Not ready yet, wait and retry
+                    import time
+                    time.sleep(3)  # wait 3 seconds
+                else:
+                    video_response.raise_for_status()
+            else:
+                # Still not ready after retries
+                return {"status": "processing"}
 
+            # Save temporary file
             filename = f"dubbed_{dubbing_id}.mp4"
             with open(filename, "wb") as f:
                 for chunk in video_response.iter_content(8192):
@@ -143,7 +156,7 @@ def get_dub_status(dubbing_id: str):
                     {"content-type": "video/mp4"}
                 )
 
-            # Get public URL
+            # Public URL
             dubbed_url = f"{SUPABASE_URL}/storage/v1/object/public/dubbed_videos/{filename}"
 
             # Update database
@@ -165,7 +178,6 @@ def get_dub_status(dubbing_id: str):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/output/{dubbing_id}")
