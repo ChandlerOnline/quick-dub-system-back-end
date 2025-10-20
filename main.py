@@ -15,7 +15,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://quick-dub-ai.lovable.app/dashboard/dub",  # ⬅️ Replace with your actual Lovable app URL
+        "https://quick-dub-ai.lovable.app",  # ⬅️ Replace with your actual Lovable app URL
         "http://localhost:3000",
     ],
     allow_credentials=True,
@@ -52,7 +52,7 @@ async def create_dub(
             f.write(await file.read())
 
         # ✅ Prepare form data for REST API
-        files = {"file": (file.filename, open(temp_path, "rb"), file.content_type)}
+        files = {"video": (file.filename, open(temp_path, "rb"), file.content_type)}
 
         data = {
             "target_lang": target_lang,
