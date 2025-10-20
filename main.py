@@ -95,30 +95,33 @@ async def create_dub(
 
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
-    """
-    Return current status and dubbed_url (if available) for frontend polling.
-    """
     try:
+        # Get current video status from Supabase
         response = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
         video = response.data
         if not video:
             raise HTTPException(status_code=404, detail="Dubbing ID not found")
 
-        # ✅ Check ElevenLabs if still processing
+        # Only check ElevenLabs if still processing
         if video["status"] == "processing":
             headers = {"xi-api-key": ELEVEN_API_KEY}
             resp = requests.get(f"{ELEVEN_BASE_URL}/{dubbing_id}", headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            if data.get("status") == "complete":
-                # Update Supabase
+            
+            # Map ElevenLabs statuses to ours
+            eleven_status = data.get("status")
+            if eleven_status in ["complete", "finished", "ready"]:  # cover all possible completions
+                # Update Supabase and get fresh row
                 supabase.table("videos").update({"status": "complete"}).eq("dubbing_id", dubbing_id).execute()
-                video["status"] = "complete"
+                response = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
+                video = response.data
+            elif eleven_status in ["failed", "error"]:
+                supabase.table("videos").update({"status": "failed"}).eq("dubbing_id", dubbing_id).execute()
+                response = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
+                video = response.data
 
-        return {
-            "status": video["status"],
-            "dubbed_url": video.get("dubbed_url")
-        }
+        return video
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
