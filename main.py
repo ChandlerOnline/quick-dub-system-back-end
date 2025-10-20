@@ -95,55 +95,77 @@ async def create_dub(
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
     try:
+        # ✅ Ensure API key is defined
+        ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+        SUPABASE_URL = os.getenv("SUPABASE_URL")
+        if not ELEVENLABS_API_KEY:
+            raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY not set")
+        if not SUPABASE_URL:
+            raise HTTPException(status_code=500, detail="SUPABASE_URL not set")
+
         # Get video record from database
-        video = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
-        
-        if not video.data:
+        video_resp = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
+        video = video_resp.data
+        if not video:
             raise HTTPException(status_code=404, detail="Dubbing ID not found")
-        
+
         # If already complete with URL, return it
-        if video.data.get("dubbed_url"):
-            return video.data
-        
+        if video.get("dubbed_url"):
+            return video
+
         # Check ElevenLabs status
         response = requests.get(
             f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}",
             headers={"xi-api-key": ELEVENLABS_API_KEY}
         )
+        response.raise_for_status()
         elevenlabs_status = response.json().get("status")
-        
+
         # If ElevenLabs says complete, download and upload the video NOW
-        if elevenlabs_status == "dubbed":
-            # Download from ElevenLabs
+        if elevenlabs_status in ["complete", "dubbed", "ready", "finished"]:
             video_response = requests.get(
-                f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}/audio/{video.data['target_language']}",
-                headers={"xi-api-key": ELEVENLABS_API_KEY}
+                f"https://api.elevenlabs.io/v1/dubbing/{dubbing_id}/output",
+                headers={"xi-api-key": ELEVENLABS_API_KEY},
+                stream=True
             )
-            
-            # Upload to Supabase storage
+            video_response.raise_for_status()
+
             filename = f"dubbed_{dubbing_id}.mp4"
-            supabase.storage.from_("dubbed_videos").upload(
-                filename,
-                video_response.content,
-                {"content-type": "video/mp4"}
-            )
-            
+            with open(filename, "wb") as f:
+                for chunk in video_response.iter_content(8192):
+                    f.write(chunk)
+
+            # Upload to Supabase storage
+            with open(filename, "rb") as f:
+                supabase.storage.from_("dubbed_videos").upload(
+                    filename,
+                    f,
+                    {"content-type": "video/mp4"}
+                )
+
             # Get public URL
             dubbed_url = f"{SUPABASE_URL}/storage/v1/object/public/dubbed_videos/{filename}"
-            
+
             # Update database
             supabase.table("videos").update({
                 "status": "complete",
                 "dubbed_url": dubbed_url
             }).eq("dubbing_id", dubbing_id).execute()
-            
-            return {"status": "complete", "dubbed_url": dubbed_url}
-        
+
+            # Clean up temp file
+            if os.path.exists(filename):
+                os.remove(filename)
+
+            # Return fresh record
+            video_resp = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
+            return video_resp.data
+
         # Still processing
         return {"status": elevenlabs_status or "processing"}
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/output/{dubbing_id}")
