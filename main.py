@@ -13,7 +13,7 @@ app = FastAPI()
 # ✅ Enable CORS for Lovable Frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # or restrict to your Lovable frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -88,7 +88,6 @@ async def create_dub(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -97,13 +96,27 @@ async def create_dub(
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
     try:
-        response = supabase.table("videos").select("status, progress").eq("dubbing_id", dubbing_id).single().execute()
-        if not response.data:
+        # ✅ Get current video status from Supabase
+        response = supabase.table("videos").select("*").eq("dubbing_id", dubbing_id).single().execute()
+        video = response.data
+        if not video:
             raise HTTPException(status_code=404, detail="Dubbing ID not found")
-        return response.data
+
+        # ✅ If still processing, check ElevenLabs API
+        if video["status"] == "processing":
+            headers = {"xi-api-key": ELEVEN_API_KEY}
+            resp = requests.get(f"{ELEVEN_BASE_URL}/{dubbing_id}", headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") == "complete":
+                # Update Supabase
+                supabase.table("videos").update({"status": "complete"}).eq("dubbing_id", dubbing_id).execute()
+                video["status"] = "complete"
+
+        return video
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @app.get("/output/{dubbing_id}")
@@ -147,3 +160,4 @@ def get_user_projects(user_id: str):
         return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
