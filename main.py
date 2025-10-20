@@ -97,13 +97,13 @@ async def create_dub(
 @app.get("/status/{dubbing_id}")
 def get_dub_status(dubbing_id: str):
     try:
-        headers = {"xi-api-key": ELEVEN_API_KEY}
-        url = f"{ELEVEN_BASE_URL}/{dubbing_id}"
-        resp = requests.get(url, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+        response = supabase.table("videos").select("status, progress").eq("dubbing_id", dubbing_id).single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Dubbing ID not found")
+        return response.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @app.get("/output/{dubbing_id}")
